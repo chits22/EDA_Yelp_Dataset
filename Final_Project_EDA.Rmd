@@ -1,0 +1,428 @@
+---
+title: "Yelp Restaurant Health Scores Data Analysis"
+author: "Chaitra Subramaniam"
+date: "12/1/2018"
+output: html_document
+---
+
+###About the Dataset
+The dataset I will be using is the Yelp data about Local Inspector Value Entry Specification (LIVES) from 2012. However, it has last been updated in August 2015 so I will be using version 2.0. https: //www.yelp.com/healthscores. The data comprises of 3 major different sub datasets:
+
+1. Businesses: Information about the businesses including address, city, lat, lon, postal code and name.
+
+2. Inspections: Information about scores about business and type of checkup
+
+3. Violations: Information about how the business violated a certain regulation. This could be in text or in code and severity of violation.
+
+###Objective
+
+Even though the Yelp data is available for numerous counties, I picked 5 (Anchorage, Fortworth, Evanston, SF, and Boulder) as they span different coasts of the United States, have various sizes,and mean income groups. 
+
+The overarching question I want to ask is how do scores differ by county and can we find any reasons as to why they do? This is interesting because my presumption is that the more expensive the county, the better the food standards will be and therefore, a higher score. However, I want to cut out this bias and try to understand the relationship between county and score using data science. 
+
+###Load Packages
+```{r,message=FALSE}
+library (tidyverse)
+library (ggplot2)
+library(dplyr)
+library(gridExtra)
+library(stringr)
+library(lubridate)
+library(data.table)
+library(modelr)
+
+```
+
+Reading in the Data: 
+```{r}
+#row.names=1 makes sure an additional index column (X) gets imported
+data<-read.csv("data/processed/dataset_merged.csv",row.names = 1)
+```
+
+###Understanding the Dataset
+
+####Data Structure
+```{r}
+names(data)
+length(names(data))
+nrow(data)
+```
+The Yelp dataset for businesses (specifically restaurants) contains information about businesses, their location like state and county, and more importantly, their checkup scores, violation, and description. The dataset has 15 columns in total and 495677 rows. Note these are not necessarily unique businesses as they can have multiple inspections on different dates. 
+
+####Unique Businesses in the Dataset 
+
+```{r}
+unique_businesses <- length(unique (data$business_id))
+prop_unique <-(unique_businesses/nrow(data))*100
+unique_businesses 
+prop_unique
+```
+The proportion of unique business id's is extremely small in the dataset (2%) which means that the same 10000 restaurants gets observed/inspected. 
+
+####Observe the number of restaurants inspected in each county
+
+```{r}
+data%>% 
+  group_by(County,state)%>%
+  summarize_each(funs(n_distinct(business_id)))%>% 
+  select(c("County","state","business_id"))
+```
+a. After importing data for 5 counties (Anchorage, Boulder, Evanston, Fortworth, and SF), I thought initially that there would only be one state per county. But in this evaluation Boulder has 5 different ones (even though most restaurants appear in Colarado). It is interesting that they would only inspect or atleast record data for such a few restaurants in the remaining states.
+
+b. I looked at the count of unique business_id's for each county and state. Unsuprisingly, SF has the highest number of restaurants (almost 14x Evanston which has the lowest) because it is a more densely populated city and county. It will be interesting to see how trends in performance/scores of these restaurants differ with bigger and smaller counties.
+
+###Types of Inspections
+
+####What are the different types?
+```{r}
+unique(data$type)
+#routine=Routine
+data$type[data$type=='routine']<-'Routine'
+```
+
+####Type per count 
+```{r}
+data%>%
+  group_by(County,type)%>%
+  summarize(n=n())%>%
+  ggplot(aes(x=County,y=n,color=type))+
+  geom_point()+
+  labs(y='Number of Inspections')
+
+data%>%
+  group_by(County,type)%>%
+  summarize(n=n())
+```
+a.Fortworth has a massive number of routine check ups compared to everything esle. It also has more follow ups than initial showing that they had to go back for check ins due to bad quality/hazards which could be why their scores were way lower. 
+
+b.Their complaints are also lower than follow ups which might show that most of the time, inspectors find out problems by their routine visits rather than by going when they get a complaint. 
+
+c.Most other check ups for the remaining counties are routine. 
+
+
+### Scores
+
+First I'd like to see how these scores are graded (and how they are distributed) and then I'd like to understand what it entails to get a certain score.
+
+####Histogram of Scores
+```{r}
+summary(data$score)
+
+data%>% 
+  ggplot(aes(score))+
+  geom_histogram(bins=100)
+```
+<br><br>
+a.Scores during these inspections can range from 1-100. 
+
+b.The distribution of the scores are interesting because there are hardly any restaurants that are considered ("average") or 50/100. The mean score is 37 whereas the median score is 18 so there is a huge discrepancy. 
+
+c.We also notice there are outliers that are over 200 which is not possible (mistake in the data possibly or an uninformed inspector)
+
+```{r}
+data <- data%>%
+  filter(score<=100)
+
+summary(data$score)
+```
+After removing data with scores greater than hundred, nothing really changed (other than the mean slightly) so it is safe to remove those values. 
+
+```{r}
+p1<- data%>%
+  filter(score<=50)%>%
+   ggplot (aes(score))+
+  geom_histogram(bins=30)+
+  labs(x="Score<=50")
+
+p2<- data%>%
+  filter(score>=50)%>%
+   ggplot (aes(score))+
+  geom_histogram(bins=30)+
+  labs(x="Score>=50")
+
+grid.arrange(p1,p2,ncol=2)
+```
+<br><br>
+a.We can view almost a symmetrical distribution. Note that these scores are not necessarily about quality of food but rather inspection of cleanliness, safety, interiors etc. which could be a reason as to why they swing one way or the other. 
+
+b.More scores lie on the left side of the 50 cutoff. A potential reason for this could be due to the fact that inspections may happen when there have been low ratings/reason for the inspection which is why they are likely to fall on the lower end.
+
+####2. Distribution of Scores in each County
+```{r}
+data%>% 
+  ggplot(aes(x=County,y=score))+
+  geom_boxplot()
+```
+<br><br>
+a. Evanston seems to have the highest mean of scores which Fortsworth has the lowest. It is interesting that this exists because the annual household income (according to 2016 reports from Data USA) is much higher in Evanston (70k) and SF (100k) than Boulder ($60000) which is why the restaurants may be of overall higher standards. One could counter that argument by saying then logically, SF should have higher mean scores than Evanston but it doesn't.
+
+b. Counties with high mean scores seem to have a smaller distribution around the mean (they may consistently get pretty good scores) whereas Boulder has a much wider distribution. 
+
+####3. How severe are the scores? 
+
+1. The data for Evanston and Fortworth specifically have information about whether the restaurant was critical (bad) in their checkup.
+```{r}
+#Evanston 
+
+data%>%
+  filter(grepl("CRITICAL",data$description))%>%
+  group_by(County)%>%
+  summarize(n=n())
+
+number_critical_ev <- data%>%
+  filter(grepl("CRITICAL",data$description))%>%
+  group_by(County)%>%
+  select(description)%>%
+  nrow()
+
+#prop critical from evanston
+number_critical_ev/nrow(filter(data,data$County=='Evanston'))*100 
+
+#prop critical from fortworth
+
+number_critical_fw<- data%>%
+  filter(data$critical=='Yes')%>%
+  nrow()
+
+number_critical_fw/nrow(filter(data,data$County=='Fortworth'))*100 
+```
+<br><br>
+a.Evanston's descriptions are the only ones that have "Critical" specified in the description. We can use this to our advantage to understand how severe the inspections are for Evanston. 25% are marked critical which can be considered quite a high number (1:4 checkups are critical). This is intriguing as Evanston also got the overall highest mean scores. 
+
+b.In contrast, however, 75% of Fortworth check ups are marked critical which unsurprisingly had the lowest mean scores. 
+<br>
+
+####Description with the Score
+In order to get an idea for what's going wrong with the rest of the counties, we can look at the description for some insight. With each score, there is a description attached which can help us understand how severe the score is: 
+
+```{r}
+unique(data$description)[1:5]
+```
+Descriptions can be minor (like the container of the orange juice is submerged in ice etc. ) but more importantly, if they are critical, they will have CRITICAL in the string. 
+
+
+###Overall Top 10 common words in the descriptions given 
+
+```{r}
+str_extract_all(data$description, boundary("word"))%>%
+unlist() %>%
+str_to_lower() %>%
+tibble() %>%
+set_names(nm='words') %>%
+group_by(words) %>%
+count(sort = TRUE) %>%
+head(10)
+```
+
+####Top 10 common words by county
+```{r}
+get_common_words<-function(county,data){
+  d <- data%>%
+    filter(County==county)
+  str_extract_all(d$description, boundary("word"))%>%
+  unlist() %>%
+  str_to_lower() %>%
+  tibble() %>%
+  set_names(nm='words') %>%
+  group_by(words) %>%
+  count(sort = TRUE) %>%
+  setnames("words",paste(county,"words"))%>%
+  head(5)
+}
+
+#Highly Scored County
+get_common_words('SF',data)
+
+#Worse scored county
+get_common_words('Fortworth',data)
+
+```
+a.For a better scored county (like SF compared to Fortworth), interestingly, the most common words in SF are violation followed by corrected. A possible reason could be because the violation was corrected, leading to a higher score. 
+
+b.However, in a lower scoring county like Fortworth, the most common word is food or grp(referring to generally accepted practices) indicating that they may not be following these standards or have poor food quality. 
+
+####Bad reviews vs. Good reviews
+
+If we term bad reviews as scores <=30:
+```{r}
+bad_reviews<-data%>%
+  filter(score<=30)
+
+head(bad_reviews$description,n=10)
+
+str_extract_all(bad_reviews$description, boundary("word")) %>%
+unlist() %>%
+str_to_lower() %>%
+tibble() %>%
+set_names(nm='words') %>%
+group_by(words) %>%
+count(sort = TRUE) %>%
+head(10)
+```
+The bad reviews surprisingly don't have terrible descriptions where there are angry reviews. This might be because they are routine steps. The most commonly used words are food or surfaces which might indicate issues with storage of the food or the temperature of the room. 
+
+And good reviews with score >= 70
+```{r}
+good_reviews<-data%>%
+  filter(score>=70)
+
+str_extract_all(good_reviews$description, boundary("word")) %>%
+unlist() %>%
+str_to_lower() %>%
+tibble() %>%
+set_names(nm='words') %>%
+group_by(words) %>%
+count(sort = TRUE) %>%
+head(5)
+```
+Initially, I was surprised that the most common word for the good reviews was violation. However, if you look closer, many of the good reviews came from Evanston and Evanston specifically marked any violations with Critical Violation. 
+
+One question you could ask is why are Evanston scores >=70 marked Critical at all? Maybe scores are inflated for Evanston? This could be a stretch but I think it is a possible implication to think about.
+```{r}
+#Mean scores for all of Evanston 
+data%>%
+  filter(County=='Evanston' && grepl("CRITICAL",data$description))%>%
+  summarize(mean_score = mean(score))
+
+#Mean scores of the Good reviews
+good_reviews%>%
+  filter(County=='Evanston' && grepl("CRITICAL",data$description))%>%
+  summarize(mean_score = mean(score))
+
+#Percentage of Good reviews from Evanston 
+(nrow(good_reviews%>%
+  filter(County=='Evanston')))*100/nrow(good_reviews)
+
+unique(good_reviews$County)
+```
+
+####How does when an inspection take place affect the score? 
+
+By Date of Inspection:
+
+```{r}
+data$date_inspection <- ymd(data$date_inspection)
+data$date_violation <- ymd(data$date_violation)
+```
+
+```{r}
+data%>%
+  mutate(day_of_week = wday(date_inspection))%>% 
+  group_by(day_of_week)%>% 
+  summarize(mean_score = mean(score,na.rm = T))%>%
+  ggplot(aes(day_of_week,mean_score))+
+  geom_point()
+```
+<br><br>
+This result is not surprising (as most of the inspections take place during the week) instead of on a weekend (day1=Sunday, day7=Saturday).
+
+```{r}
+data%>%
+  group_by(date_inspection)%>%
+  summarize(mean_score= mean(score,na.rm=T))%>%
+  ggplot(aes(date_inspection,mean_score))+
+  geom_point()
+```
+<br><br>
+There is a huge jump in average scores from early to late 2017. Let us check if this is linked to the County in which the scores are based. 
+
+```{r}
+data%>%
+  group_by(date_inspection,County)%>%
+  summarize(mean_score= mean(score,na.rm=T))%>%
+  ggplot(aes(date_inspection,mean_score,color=County))+
+  geom_point()+
+  labs(y="Mean_Score")
+```
+<br><br>
+The year of inspection gives significant understanding as to why there is a massive jump in mean scores. Initially, from 2015-2016, only Fortworth was reported. Then, when SF and Anchorage started getting recorded in 2016, you see a slight increase in mean scores. Finally, when Fortworth was no longer being reported, Anchorage, Evanston and Sf pulled up the mean scores significantly (there were far fewer data points in Boulder as opposed to the rest). See the statistic below to see the exact difference in data points. 
+
+```{r}
+nrow(data%>%
+       filter(County=='Anchorage'|County=='SF'|County == 'Evanston'))
+
+nrow(data%>%
+       filter(County=='Boulder'))
+```
+
+####Modelling the Data 
+
+A huge limitation of our data set is that the data was not collected in a standardized period of time across counties. Since it's hard to find a pattern over years, we have to model each one separately. 
+
+```{r}
+county_model <- function(df) {
+  lm(mean_score ~ date_inspection, data = df)
+}
+
+score_by_county <- data %>% 
+  #grouping by county 
+  group_by(County) %>% 
+  mutate(mean_score=mean(score))%>%
+  #each county will have its own dataset
+  nest()
+
+score_by_county <- score_by_county %>% 
+  mutate(model = map(data, county_model))
+
+score_by_county <- score_by_county %>%
+  mutate(
+    #use map like before to map func each row in data set
+    resids = map2(data, model, add_residuals)
+  )
+
+score_by_county
+
+```
+
+```{r}
+glance_coefs <- score_by_county %>% 
+  #broom:tidy gives you info about estimates, std. error and statistic
+  mutate(glance = map(model, broom::tidy)) %>% 
+  unnest(glance, .drop = TRUE)
+glance_coefs
+
+glance_r2 <- score_by_county %>% 
+  #broom:tidy gives you info about estimates, std. error and statistic
+  mutate(glance = map(model, broom::glance)) %>% 
+  unnest(glance, .drop = TRUE)
+glance_r2
+```
+The interesting take away is that the slopes for all the counties (date_inspection estimate) are all extremely close to 0 showing that the mean scores remain pretty much the same. All their respective p values are extremely close to 0 showing that this result is statistically significant. In words, this shows that restaurants have not improved/reduced scores over the years. This could either be because the restaurant quality stayed the same or the inspections were somewhat biased when scoring them. There are a lot of controls such as inspector in charge, time of year, restaurant location that cannot be controled for so we can never be sure of this answer until we gain more data to control those variables. 
+
+###Key Takeaways
+
+1. There are significant distinctions in scores by county (Evanston has the highest mean score, Fortworth has the lowest)
+
+2. Distribution of the scores are higher towards the lower and upper ends (0,100). Very few scores actually score 50 (or average) 
+
+3. The most common words used in the descriptions differ by county but are not super representative of why the counties were scored a certain way (mostly talk about food, surfaces etc.) but it hard to reach a conclusive judgement on quality (no words like bad, good etc.)
+
+4. Mean county scores don't change over years. If the county recieves a certain score one year, they are likely to recieve the same the next. This is interesting because you'd expect the counties that score less to be able to improve and bump their scores or counties that score high to have "bad years" where they don't score that well. 
+
+###Limitations of Data and Future Work 
+
+Limitation 1: 
+
+Counties aren't scored in the same time frame. It is therefore hard to reach conclusive results about yearwise scores (just because scores jump significantly post 2017, it doesn't mean restaurants are improving across the board -- they were just looking at a completely different set of counties). 
+
+Future Work 1:
+
+In the future, it could be helpful if Yelp/the counties released scores pertinent to a constant time frame. Or we can filter data to choose only those counties that were inspected in the same years.
+
+Limitation 2: 
+
+This dataset may use counties that are pretty widespread geographically so you can't see patterns that occur in counties that are closer to each other (state/coast wise comparison). 
+
+Future Work 2: 
+
+If this analysis was to be expanded, we could look at more counties around the key counties like Evanston or Fortworth to get trends to see if nearby restaurants follow the same trends or if this county is a one of. 
+
+Limitation 3: 
+
+The variable code was hard to work with because it was very difficult for me to find a standardized FDA health code chart to work with especially as the years of inspection differed so significantly. 
+
+Future Work 4: 
+
+If we could potentially match the codes in this dataset to the codes by the FDA, we could get a better understanding of the health standard they were violating and thereby why they recieved the certain score that they did. Also since this analysis was primarily to do a county-wise analysis, it did not tell you the specifics of the restaurants (cuisine, size etc.) It would be very cool if we could expand this analysis to find trends in scores by restaurants. 
+
+
